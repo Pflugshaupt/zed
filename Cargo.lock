@@ -3165,6 +3165,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "language",
+ "log",
+ "lsp",
+ "paths",
+ "picker",
+ "project",
+ "serde",
+ "serde_json",
+ "settings",
+ "task",
+ "terminal",
+ "terminal_view",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22554,6 +22580,7 @@ dependencies = [
  "cli",
  "client",
  "clock",
+ "cmake_panel",
  "codestral",
  "collab_ui",
  "collections",
