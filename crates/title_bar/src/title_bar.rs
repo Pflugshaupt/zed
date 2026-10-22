@@ -227,6 +227,7 @@ pub struct TitleBar {
     banner: Option<Entity<OnboardingBanner>>,
     update_version: Entity<UpdateVersion>,
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
+    left_items: Vec<AnyView>,
     _diagnostics_subscription: Option<gpui::Subscription>,
 }
 
@@ -366,6 +367,7 @@ impl Render for TitleBar {
                                 )
                         })
                 })
+                .children(self.left_items.iter().cloned())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .into_any_element(),
         );
@@ -467,6 +469,13 @@ impl Render for TitleBar {
 }
 
 impl TitleBar {
+    /// Adds a view at the end of the title bar's left side, after the project
+    /// and branch, for crates that can't be added to the title bar directly.
+    pub fn add_left_item(&mut self, item: AnyView, cx: &mut Context<Self>) {
+        self.left_items.push(item);
+        cx.notify();
+    }
+
     pub fn new(
         id: impl Into<ElementId>,
         workspace: &Workspace,
@@ -552,6 +561,7 @@ impl TitleBar {
             banner,
             update_version,
             screen_share_popover_handle: PopoverMenuHandle::default(),
+            left_items: Vec::new(),
             _diagnostics_subscription: None,
         };
 
