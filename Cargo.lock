@@ -3172,6 +3172,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "collections",
+ "db",
  "fs",
  "futures 0.3.34",
  "gpui",
@@ -3187,6 +3188,7 @@ dependencies = [
  "task",
  "terminal",
  "terminal_view",
+ "title_bar",
  "ui",
  "util",
  "workspace",

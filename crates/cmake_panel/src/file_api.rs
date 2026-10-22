@@ -30,6 +30,8 @@ pub struct Target {
     pub name: SharedString,
     /// The program this target builds, if it's an executable.
     pub executable: Option<PathBuf>,
+    /// The target's `FOLDER` property, with `/` separating nested folders.
+    pub folder: Option<SharedString>,
 }
 
 /// Returns the buildable targets from the latest reply, sorted by name, or an
@@ -96,6 +98,7 @@ pub async fn read_targets(fs: &dyn Fs, build_dir: &Path) -> Result<Vec<Target>> 
         targets.push(Target {
             name,
             executable: executable_path(&target, build_dir),
+            folder: folder_name(&target),
         });
     }
     targets.sort_by(|left, right| left.name.cmp(&right.name));
@@ -121,6 +124,13 @@ fn codemodel_target_files(codemodel: &Value) -> Vec<(SharedString, &str)> {
             Some((SharedString::from(name.to_string()), target_file))
         })
         .collect()
+}
+
+/// CMake reports the folder even when the `USE_FOLDERS` global property is
+/// off, and the file API has no way to tell whether it is.
+fn folder_name(target: &Value) -> Option<SharedString> {
+    let name = target.get("folder")?.get("name")?.as_str()?;
+    Some(SharedString::from(name.to_string()))
 }
 
 /// Artifact paths are relative to the build directory unless they're outside
@@ -207,6 +217,7 @@ mod tests {
                 "target-app-debug.json": json!({
                     "name": "app",
                     "type": "EXECUTABLE",
+                    "folder": { "name": "Apps/Tools" },
                     "artifacts": [{ "path": "Debug/app" }]
                 })
                 .to_string(),
@@ -226,10 +237,12 @@ mod tests {
                 Target {
                     name: "app".into(),
                     executable: Some(PathBuf::from("/build/Debug/app")),
+                    folder: Some("Apps/Tools".into()),
                 },
                 Target {
                     name: "util".into(),
                     executable: None,
+                    folder: None,
                 },
             ]
         );

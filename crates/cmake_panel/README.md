@@ -8,18 +8,28 @@ Project, Git and Outline panels (triangle icon) and currently lets you:
 - **build**, **run** or **debug** the target with one split button; build
   errors and warnings show up in Zed's Problems panel and in the editor
 
+The same menus and buttons are also shown on the left of Zed's title bar,
+for projects with a presets file.
+
 Planned next: a **clean** button.
 
 ## Keeping the fork easy to update
 
-Zed changes quickly upstream, so everything lives in this folder and Zed
-only knows about it through two one-line entry points:
+Zed changes quickly upstream, so almost everything lives in this folder. Zed
+only knows about it through two one-line entry points and a small hook in the
+title bar:
 
 | File | Change |
 |---|---|
 | `crates/zed/Cargo.toml` | `cmake_panel = { path = "../cmake_panel" }` |
 | `crates/zed/src/main.rs` | `cmake_panel::init(cx);` next to `outline_panel::init(cx);` |
+| `crates/title_bar/src/title_bar.rs` | A `left_items: Vec<AnyView>` field on `TitleBar`, its initialization in `TitleBar::new`, a public `add_left_item` method, one `.children(self.left_items.iter().cloned())` line at the end of the left group in `render` (before its `on_mouse_down`), and `AnyView` in the `gpui` import |
 | `Cargo.lock` | Updated by Cargo. On merge conflicts, take upstream's and rebuild. |
+
+The title bar hook is the only change inside an upstream crate. `TitleBar`
+renders a fixed list of children and has no way for other crates to add
+items, so it couldn't be avoided. It's additive, so upstream changes to the
+title bar should rarely conflict with it. If one does, re-add those few lines.
 
 The root `Cargo.toml` is untouched: Cargo makes the crate a workspace member
 automatically because `crates/zed` depends on it by path. The repo-root
@@ -38,24 +48,37 @@ Choices made to keep it that way:
   per dock (debug builds panic otherwise); the built-in panels use 0–7, so this
   stays clear of future upstream panels.
 - **Icon.** Zed's existing `IconName::Triangle`, so no assets were added.
-- **Settings.** The cmake path is read directly from the user's
+- **Title bar.** `init()` adds the title bar controls with
+  `TitleBar::add_left_item`. The title bar is created by another
+  `observe_new` callback that runs after this crate's, so the controls are
+  added in a `defer_in`.
+- **Settings.** The panel's settings are read directly from the user's
   `settings.json` instead of being registered in Zed's central settings
   schema, which lives in another crate (see below).
 
 ## Settings
 
-By default the panel runs `cmake` from `PATH`. To use a different cmake, add
-this to your Zed `settings.json` (Zed: Open Settings File):
+Add these to your Zed `settings.json` (Zed: Open Settings File):
 
 ```json
 "cmake": {
-  "path": "/opt/homebrew/bin/cmake"
+  "path": "/opt/homebrew/bin/cmake",
+  "use_folders": false
 }
 ```
 
-This works like `lsp.clangd.binary.path`, but as a text-only setting: Zed
-ignores keys it doesn't know, so it won't show up in the settings UI or offer
-autocompletion. The panel re-reads it whenever settings change. Only the user
+- `path`: the cmake to run. By default the panel runs `cmake` from `PATH`.
+- `use_folders`: whether the target menu groups targets into submenus by their
+  `FOLDER` property. Defaults to `true`. CMake Tools has the same option,
+  `cmake.useFolderPropertyInBuildTargetDropdown`, but off by default.
+
+These work like `lsp.clangd.binary.path`, but as text-only settings: Zed keeps
+keys it doesn't know, but they don't show up in the settings UI, aren't
+autocompleted, and the editor marks `"cmake"` as an unknown property. Making
+them real Zed settings would mean editing `settings_content` (the settings
+struct and schema), `settings`, `assets/settings/default.json`, and
+`settings_ui` for the settings UI, which this fork avoids. The panel re-reads
+them whenever settings change. Only the user
 settings file is read, not a project's `.zed/settings.json`.
 
 ## How it works
@@ -116,6 +139,27 @@ reply is already in the selected preset's build directory. For executable
 targets the panel also keeps the path of the built program (the target's first
 artifact), which Run and Debug use.
 
+The target menu starts with **All Targets**, which builds with
+`cmake --build` and no `--target`, so CMake builds the project's default
+target (`all`, or `ALL_BUILD` for Visual Studio and Xcode). Below it, targets
+with a `FOLDER` property are shown in submenus, grouped like Visual Studio and
+Xcode group them (unless `use_folders` is off). `/` separates nested folders,
+so `GUI/Dialogs` is a `Dialogs` submenu inside a `GUI` submenu. Each menu lists
+its folders first, then its targets, each sorted by name.
+
+The selection follows what
+[CMake Tools](https://github.com/microsoft/vscode-cmake-tools) does: All
+Targets is the default, and a selected target that no longer exists after a
+configure falls back to All Targets. While there are no targets yet (the build
+directory isn't configured), the selection is kept.
+
+### Saved selections
+
+The selected preset, target and action are saved per workspace in Zed's
+key-value database, the same way the built-in panels save their state, and
+restored when the workspace is reopened. Presets are listed only after the
+saved state is loaded, so the saved preset is picked instead of the first one.
+
 ### Build, Run and Debug
 
 The split button below the target works like the git panel's "Stage All"
@@ -124,7 +168,8 @@ that switches the action between **Build**, **Run** and **Debug**. Picking an
 action from the menu only switches it; it doesn't run it.
 
 Every action starts with
-`cmake --build <build dir> --target <target>` in a "CMake: Build" terminal tab
+`cmake --build <build dir> --target <target>` (without `--target` for All
+Targets) in a "CMake: Build" terminal tab
 (quoted like the configure command). The button shows "Building..." until it's
 done. Then:
 
@@ -136,7 +181,9 @@ done. Then:
   `debug.json` entry with `"request": "launch"`, `"program"` and `"cwd"`.
 
 Run and Debug only continue if the build succeeds. They're unavailable for
-targets that aren't executables. Errors, such as a failed build, are shown
+targets that aren't executables. With All Targets selected, they start the
+project's only executable. If there's more than one, the target menu opens
+instead so you can pick one, and pressing the button again builds and runs it. Errors, such as a failed build, are shown
 under the button.
 
 The **Stop** button next to it kills the running build, or, when no build is
@@ -164,31 +211,50 @@ clears the previous build's issues, and files that no longer have issues are
 cleared explicitly. Files outside the project, such as system headers, are
 skipped.
 
+### State and views
+
+All state and logic lives in one `CMakeProject` entity per workspace
+(`cmake_project.rs`). The panel and the title bar are both views of it: they
+observe it, render its menus and buttons, and call it to change selections or
+run actions. Each view has its own `Controls` (`controls.rs`), which holds the
+popup handles, so the panel's and the title bar's popups open independently.
+When Run or Debug needs a target to be picked, the target menu of the view
+whose button was clicked opens.
+
 ### UI
 
+- The title bar shows the preset menu, the target menu, the action split button
+  and Stop, in that order, after the project name and branch and a vertical
+  divider, without labels or error messages. The buttons are
+  borderless with small text, like the title bar's own. They're hidden for
+  projects without a presets file and for remote projects. Errors are only
+  shown in the panel.
 - The panel has a "CMake" header and a section per selector, with a muted
   label above each.
 - Each selector is a bordered button, styled like the git panel's buttons. Its
   chevron flips and it's tinted while its popup is open.
-- The popups are one searchable list component (`ItemSelector`, built on Zed's
-  `Picker`), used for both presets and targets. The rows mimic Zed's context
-  menus: a checkmark column and plain labels. Type to filter, arrow keys and
-  Enter to pick, Escape to close.
+- The preset popup is a searchable list (`ItemSelector`, built on Zed's
+  `Picker`). Its rows mimic Zed's context menus: a checkmark column and plain
+  labels. Type to filter, arrow keys and Enter to pick, Escape to close.
+- The target popup is a Zed context menu, because only context menus have
+  submenus. Folders open on hover or with the right arrow key. It has no
+  search.
 - Text is one size step larger than Zed's panel defaults, by request.
 
 ## Files
 
 | File | Contents |
 |---|---|
-| `src/cmake_panel.rs` | Crate root: `init()`, the panel, settings, the configure/build/run terminal tasks, the debug scenario, the action split button, and the `ItemSelector` popup |
+| `src/cmake_panel.rs` | Crate root: `init()`, the panel, and the title bar view |
+| `src/cmake_project.rs` | `CMakeProject`: settings, saved selections, presets, targets, configure/build/run terminal tasks, the debug scenario, and Stop |
+| `src/controls.rs` | The preset and target menus, the action split button and Stop, in panel and title bar styles, plus the `ItemSelector` popup |
 | `src/presets.rs` | Listing presets via cmake, and resolving a preset's `binaryDir` |
-| `src/file_api.rs` | Writing the codemodel query, and reading targets and their executables from the reply |
+| `src/file_api.rs` | Writing the codemodel query, and reading targets, their executables and folders from the reply |
 | `src/build_issues.rs` | Parsing compiler output and publishing it to the Problems panel |
 
 ## Known limitations
 
-- The dock side (left or right) and the selected preset and target aren't
-  saved across restarts.
+- The dock side (left or right) isn't saved across restarts.
 - Only the first project folder with a presets file is used.
 - Editing a file pulled in through `include` doesn't reload the preset list;
   only the two top-level presets files do.
@@ -199,9 +265,12 @@ skipped.
 - A preset without `binaryDir` (allowed since presets version 3) has no known
   build directory, so its targets can't be listed. `$vendor{}` macros in
   `binaryDir` aren't supported.
+- Target folders are shown even when the `USE_FOLDERS` global property is
+  off. The file API reports `FOLDER` either way and has no way to read global
+  properties. `USE_FOLDERS` is on by default since CMake 3.26 (policy CMP0143).
+  Turn folders off with the `use_folders` setting instead.
 - Visual Studio and Xcode generators also list their helper targets such as
-  `ALL_BUILD` and `ZERO_CHECK`. There's no "all" entry yet.
-- The selected action (Build, Run or Debug) isn't saved across restarts.
+  `ALL_BUILD` and `ZERO_CHECK`.
 - Builds don't pass `--config`, so multi-config generators (Xcode, Ninja
   Multi-Config, Visual Studio) build their default configuration, usually
   Debug. Run and Debug use the program path of the first configuration CMake
