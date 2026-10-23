@@ -63,7 +63,8 @@ Add these to your Zed `settings.json` (Zed: Open Settings File):
 ```json
 "cmake": {
   "path": "/opt/homebrew/bin/cmake",
-  "use_folders": false
+  "use_folders": false,
+  "restart_clangd_on_config_change": false
 }
 ```
 
@@ -71,6 +72,9 @@ Add these to your Zed `settings.json` (Zed: Open Settings File):
 - `use_folders`: whether the target menu groups targets into submenus by their
   `FOLDER` property. Defaults to `true`. CMake Tools has the same option,
   `cmake.useFolderPropertyInBuildTargetDropdown`, but off by default.
+- `restart_clangd_on_config_change`: whether clangd restarts when a `.clangd`
+  file in the project changes. Defaults to `true`. See
+  [clangd restarts](#clangd-restarts).
 
 These work like `lsp.clangd.binary.path`, but as text-only settings: Zed keeps
 keys it doesn't know, but they don't show up in the settings UI, aren't
@@ -210,6 +214,22 @@ and they're marked as describing the files on disk. Starting a new build
 clears the previous build's issues, and files that no longer have issues are
 cleared explicitly. Files outside the project, such as system headers, are
 skipped.
+
+### clangd restarts
+
+clangd re-reads `.clangd` when it reparses a file, but files that are already
+open and its background index keep the compilation database they started
+with. A configure step that rewrites `.clangd` to point
+`CompileFlags.CompilationDatabase` at another build directory then has no
+effect until clangd restarts. The vscode-clangd extension handles this by
+watching `.clangd` (`clangd.onConfigChanged`); Zed doesn't, so the panel does.
+
+When a `.clangd` file anywhere in the project's worktrees is added, changed or
+removed, the panel restarts any running clangd, like "Restart Server" in the
+language server menu. Entries found by the initial worktree scan
+don't count, and nothing happens while clangd isn't running.
+`compile_commands.json` isn't watched, because clangd reloads it by itself.
+Files in gitignored directories that Zed hasn't scanned aren't seen.
 
 ### State and views
 

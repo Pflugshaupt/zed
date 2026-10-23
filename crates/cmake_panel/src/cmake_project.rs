@@ -4,11 +4,12 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow};
-use collections::HashSet;
+use collections::{HashMap, HashSet};
 use db::kvp::KeyValueStore;
 use fs::Fs;
 use gpui::{AsyncWindowContext, Entity, Subscription, Task, WeakEntity};
-use project::Project;
+use lsp::{LanguageServerName, LanguageServerSelector};
+use project::{PathChange, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use settings::SettingsStore;
@@ -43,6 +44,9 @@ struct CMakeSettings {
     /// Whether the target menu groups targets into submenus by their `FOLDER`
     /// property. Defaults to true.
     use_folders: Option<bool>,
+    /// Whether clangd restarts when a `.clangd` file in the project changes.
+    /// Defaults to true.
+    restart_clangd_on_config_change: Option<bool>,
 }
 
 async fn load_cmake_settings(fs: &dyn Fs) -> Result<CMakeSettings> {
@@ -75,6 +79,9 @@ struct SerializedCMakeProject {
     configure_preset: Option<String>,
     /// `None` when all targets are selected.
     target: Option<String>,
+    /// The targets last selected in the other configure presets.
+    #[serde(default)]
+    preset_targets: HashMap<String, Option<String>>,
     action: Option<BuildAction>,
 }
 
@@ -84,6 +91,19 @@ pub(crate) enum TargetSelection {
     /// default target: `all`, or `ALL_BUILD` for Visual Studio and Xcode.
     All,
     Named(SharedString),
+}
+
+impl TargetSelection {
+    fn from_serialized(target: Option<String>) -> Self {
+        target.map_or(Self::All, |target| Self::Named(target.into()))
+    }
+
+    fn to_serialized(&self) -> Option<String> {
+        match self {
+            Self::All => None,
+            Self::Named(target) => Some(target.to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +155,7 @@ pub(crate) struct CMakeProject {
     state_restored: bool,
     cmake_path: Option<String>,
     use_folders: bool,
+    restart_clangd_on_config_change: bool,
     /// Whether the project has a presets file that the panel can use.
     has_presets_file: bool,
     configure_presets: Vec<ConfigurePreset>,
@@ -142,6 +163,9 @@ pub(crate) struct CMakeProject {
     configure_presets_error: Option<SharedString>,
     targets: Vec<Target>,
     selected_target: TargetSelection,
+    /// The targets last selected in the configure presets other than the
+    /// selected one, so that switching back to a preset restores its target.
+    preset_targets: HashMap<SharedString, TargetSelection>,
     targets_error: Option<SharedString>,
     is_configuring: bool,
     action: BuildAction,
@@ -179,10 +203,18 @@ impl CMakeProject {
                 project::Event::WorktreeAdded(_) | project::Event::WorktreeRemoved(_) => {
                     this.refresh_configure_presets(cx);
                 }
-                project::Event::WorktreeUpdatedEntries(_, entries)
-                    if entries.iter().any(|(path, _, _)| is_presets_file(path)) =>
-                {
-                    this.refresh_configure_presets(cx);
+                project::Event::WorktreeUpdatedEntries(_, entries) => {
+                    if entries.iter().any(|(path, _, _)| is_presets_file(path)) {
+                        this.refresh_configure_presets(cx);
+                    }
+                    // `Loaded` entries come from the initial scan, not from a change.
+                    if this.restart_clangd_on_config_change
+                        && entries.iter().any(|(path, _, change)| {
+                            *change != PathChange::Loaded && is_clangd_config_file(path)
+                        })
+                    {
+                        this.restart_clangd(cx);
+                    }
                 }
                 _ => {}
             }),
@@ -200,12 +232,14 @@ impl CMakeProject {
             state_restored: false,
             cmake_path: None,
             use_folders: true,
+            restart_clangd_on_config_change: true,
             has_presets_file: false,
             configure_presets: Vec::new(),
             selected_configure_preset: None,
             configure_presets_error: None,
             targets: Vec::new(),
             selected_target: TargetSelection::All,
+            preset_targets: HashMap::default(),
             targets_error: None,
             is_configuring: false,
             action: BuildAction::Build,
@@ -300,9 +334,12 @@ impl CMakeProject {
 
     fn apply_restored_state(&mut self, state: SerializedCMakeProject, cx: &mut Context<Self>) {
         self.selected_configure_preset = state.configure_preset.map(SharedString::from);
-        self.selected_target = state.target.map_or(TargetSelection::All, |target| {
-            TargetSelection::Named(target.into())
-        });
+        self.selected_target = TargetSelection::from_serialized(state.target);
+        self.preset_targets = state
+            .preset_targets
+            .into_iter()
+            .map(|(preset, target)| (preset.into(), TargetSelection::from_serialized(target)))
+            .collect();
         self.action = state.action.unwrap_or(BuildAction::Build);
         self.state_restored = true;
         self.refresh_configure_presets(cx);
@@ -317,10 +354,12 @@ impl CMakeProject {
                 .selected_configure_preset
                 .as_ref()
                 .map(|preset| preset.to_string()),
-            target: match &self.selected_target {
-                TargetSelection::All => None,
-                TargetSelection::Named(target) => Some(target.to_string()),
-            },
+            target: self.selected_target.to_serialized(),
+            preset_targets: self
+                .preset_targets
+                .iter()
+                .map(|(preset, target)| (preset.to_string(), target.to_serialized()))
+                .collect(),
             action: Some(self.action),
         };
         let kvp = KeyValueStore::global(cx);
@@ -341,6 +380,8 @@ impl CMakeProject {
                 let cmake_path = match settings {
                     Ok(settings) => {
                         this.use_folders = settings.use_folders.unwrap_or(true);
+                        this.restart_clangd_on_config_change =
+                            settings.restart_clangd_on_config_change.unwrap_or(true);
                         cx.notify();
                         settings.path
                     }
@@ -462,6 +503,20 @@ impl CMakeProject {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.selected_configure_preset.as_ref() != Some(&preset) {
+            // A preset that hasn't had a target selected yet keeps the current
+            // one, which is usually what's wanted when switching between build
+            // types.
+            let target = self
+                .preset_targets
+                .remove(&preset)
+                .unwrap_or_else(|| self.selected_target.clone());
+            let previous_target = std::mem::replace(&mut self.selected_target, target);
+            if let Some(previous_preset) = self.selected_configure_preset.take() {
+                self.preset_targets.insert(previous_preset, previous_target);
+            }
+            self.action_error = None;
+        }
         self.selected_configure_preset = Some(preset);
         self.serialize(cx);
         cx.notify();
@@ -527,6 +582,30 @@ impl CMakeProject {
                 this.refresh_targets(cx);
             })
             .ok();
+        });
+    }
+
+    /// clangd re-reads `.clangd` when it reparses a file, but open files and
+    /// the background index keep their old compilation database, which
+    /// matters when `.clangd` points at another build directory.
+    fn restart_clangd(&self, cx: &mut Context<Self>) {
+        let clangd = LanguageServerName::new_static("clangd");
+        let project = self.project.read(cx);
+        let lsp_store = project.lsp_store();
+        let clangd_is_running = lsp_store
+            .read(cx)
+            .language_server_statuses()
+            .any(|(_, status)| status.name == clangd);
+        if !clangd_is_running {
+            return;
+        }
+        let buffers = project.buffer_store().read(cx).buffers().collect();
+        lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.restart_language_servers_for_buffers(
+                buffers,
+                HashSet::from_iter([LanguageServerSelector::Name(clangd)]),
+                cx,
+            )
         });
     }
 
@@ -836,6 +915,12 @@ impl CMakeProject {
 
 fn is_presets_file(path: &RelPath) -> bool {
     PRESETS_FILE_NAMES.contains(&path.as_unix_str())
+}
+
+/// clangd reads a `.clangd` file from every parent directory of a source
+/// file, so any of them in the project counts.
+fn is_clangd_config_file(path: &RelPath) -> bool {
+    path.file_name() == Some(".clangd")
 }
 
 /// The terminal pastes a task's command and arguments into a shell command
