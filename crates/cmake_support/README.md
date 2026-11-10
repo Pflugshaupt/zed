@@ -1,4 +1,4 @@
-# CMake Panel
+# CMake Support
 
 A dock panel for CMake projects, added to this fork of Zed. It sits next to the
 Project, Git and Outline panels (triangle icon) and currently lets you:
@@ -21,8 +21,8 @@ title bar:
 
 | File | Change |
 |---|---|
-| `crates/zed/Cargo.toml` | `cmake_panel = { path = "../cmake_panel" }` |
-| `crates/zed/src/main.rs` | `cmake_panel::init(cx);` next to `outline_panel::init(cx);` |
+| `crates/zed/Cargo.toml` | `cmake_support = { path = "../cmake_support" }` |
+| `crates/zed/src/main.rs` | `cmake_support::init(cx);` next to `outline_panel::init(cx);` |
 | `crates/title_bar/src/title_bar.rs` | A `left_items: Vec<AnyView>` field on `TitleBar`, its initialization in `TitleBar::new`, a public `add_left_item` method, one `.children(self.left_items.iter().cloned())` line at the end of the left group in `render` (before its `on_mouse_down`), and `AnyView` in the `gpui` import |
 | `Cargo.lock` | Updated by Cargo. On merge conflicts, take upstream's and rebuild. |
 
@@ -265,7 +265,7 @@ whose button was clicked opens.
 
 | File | Contents |
 |---|---|
-| `src/cmake_panel.rs` | Crate root: `init()`, the panel, and the title bar view |
+| `src/cmake_support.rs` | Crate root: `init()`, the panel, and the title bar view |
 | `src/cmake_project.rs` | `CMakeProject`: settings, saved selections, presets, targets, configure/build/run terminal tasks, the debug scenario, and Stop |
 | `src/controls.rs` | The preset and target menus, the action split button and Stop, in panel and title bar styles, plus the `ItemSelector` popup |
 | `src/presets.rs` | Listing presets via cmake, and resolving a preset's `binaryDir` |
@@ -308,8 +308,8 @@ whose button was clicked opens.
 
 ```sh
 cargo run                        # build and launch Zed with the panel
-cargo test -p cmake_panel        # preset parsing, binaryDir resolution, file API, issue parsing and publishing
-./script/clippy -p cmake_panel   # lint (the repo asks for this instead of cargo clippy)
+cargo test -p cmake_support        # preset parsing, binaryDir resolution, file API, issue parsing and publishing
+./script/clippy -p cmake_support   # lint (the repo asks for this instead of cargo clippy)
 ```
 
 A GPUI trap that already caused one crash: an entity can't be read while it's
