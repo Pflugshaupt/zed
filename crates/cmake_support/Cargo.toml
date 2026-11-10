@@ -1,5 +1,5 @@
 [package]
-name = "cmake_panel"
+name = "cmake_support"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 workspace = true
 
 [lib]
-path = "src/cmake_panel.rs"
+path = "src/cmake_support.rs"
 doctest = false
 
 [dependencies]

@@ -3167,7 +3167,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake_panel"
+name = "cmake_support"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -22606,7 +22606,7 @@ dependencies = [
  "cli",
  "client",
  "clock",
- "cmake_panel",
+ "cmake_support",
  "codestral",
  "collab_ui",
  "collections",
